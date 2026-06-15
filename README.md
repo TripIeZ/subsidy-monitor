@@ -12,9 +12,21 @@
 - Сканируем окно якорями с шагом 7 дней → месяц за 4-5 загрузок.
 - Сравниваем с прошлым проходом (`state.json`) и шлём в Telegram **только новые** даты.
 
+## Установка с нуля (новый компьютер / контрибьютор)
+```bash
+git clone https://github.com/katanaim/subsidy-monitor.git
+cd subsidy-monitor
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium   # скачает headless-браузер (~100 МБ)
+cp .env.example .env                               # затем впиши токен и chat_id
+```
+Свой Telegram-бот: создай у **@BotFather** (`/newbot`), токен и `chat_id`
+(через @userinfobot или `python3 get_chat_id.py`) впиши в `.env`.
+
 ## Запуск
 ```bash
-cd ~/subsidy-monitor
+cd subsidy-monitor
 .venv/bin/python monitor.py --once   # один проход (тест)
 .venv/bin/python monitor.py          # вечный цикл, раз в 30 мин (POLL_INTERVAL_SEC)
 ```
