@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 state.json
+subscriptions.json
+bot.log
+*.png
+.idea/
