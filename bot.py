@@ -21,6 +21,7 @@ from telegram.ext import (
 )
 
 import config
+import s7
 import storage
 import ural
 from notify import load_env
@@ -53,9 +54,9 @@ HOW = (
     "❓ <b>Как это работает</b>\n\n"
     "1. Ты выбираешь направление и когда хочешь улететь "
     "(точная дата, любой день недели или месяца).\n"
-    "2. Я каждые ~30 минут проверяю сайт авиакомпании.\n"
-    "3. Как только под твою слежку появляется субсидированный билет — "
-    "мгновенно присылаю сообщение с ценой и ссылкой на покупку.\n\n"
+    "2. Я регулярно проверяю <b>Уральские авиалинии</b> и <b>S7</b>.\n"
+    "3. Как только под твою слежку появляется субсидированный (или аномально "
+    "дешёвый на S7) билет — мгновенно присылаю цену и ссылку на покупку.\n\n"
     "⚡️ Субсидия разлетается за минуты — бронируй сразу, как пришёл алерт."
 )
 
@@ -303,7 +304,7 @@ async def save_watch(update, context, flex, value):
     for rid in routes:
         storage.add_watch(chat_id, {
             "id": uuid4().hex[:8], "route": rid,
-            "flex": flex, "value": value, "notified": [],
+            "flex": flex, "value": value, "notified": {},
         })
 
     if len(routes) == 2:
@@ -372,16 +373,34 @@ async def scan_routes(route_ids):
     return results
 
 
-async def send_alert(bot, chat_id, w, dates):
+_CARRIER_LABEL = {"ural": "Ural", "s7": "S7"}
+
+
+def _notified_map(w):
+    """notified бывает старым списком (Ural-only) или словарём по перевозчикам."""
+    n = w.get("notified")
+    if isinstance(n, dict):
+        return {k: list(v) for k, v in n.items()}
+    if isinstance(n, list):
+        return {"ural": list(n)}
+    return {}
+
+
+async def send_alert(bot, chat_id, w, carrier, dates):
     route = ROUTE_BY_ID[w["route"]]
     ds = sorted(dates)
-    lines = ["🎉 <b>Субсидия найдена!</b>", f"✈️ {route['label']} · Ural", ""]
+    if carrier == "s7":
+        head = "🟢 <b>Дешёвый/субсидированный билет S7!</b>"
+        url = s7.search_url(route["orig"], route["dest"], ds[0])
+    else:
+        head = "🎉 <b>Субсидия найдена!</b>"
+        url = ural.subsidized_url(route["orig"], route["dest"], ds[0])
+    lines = [head, f"✈️ {route['label']} · {_CARRIER_LABEL.get(carrier, carrier)}", ""]
     for iso in ds[:8]:
         lines.append(f"• {fmt_full(iso)} — <b>{dates[iso]} ₽</b>")
     if len(ds) > 8:
         lines.append(f"…и ещё {len(ds) - 8} дат")
     lines.append("\n⚡️ Разлетается за минуты — бронируй сейчас!")
-    url = ural.subsidized_url(route["orig"], route["dest"], ds[0])
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎫 Купить на сайте", url=url)],
         [InlineKeyboardButton("🔕 Нашёл билет, остановить", callback_data=f"del:{w['id']}")],
@@ -396,26 +415,57 @@ async def scan_and_notify(app):
     if not route_ids:
         return
     log.info("scan: маршрутов в работе %d", len(route_ids))
-    results = await scan_routes(route_ids)
-    avail = {rid: {iso: pr for iso, pr in m.items()
-                   if pr is not None and pr < config.SUBSIDY_PRICE_MAX}
-             for rid, m in results.items()}
+
+    # avail[(route_id, carrier)] = {iso: price} — доступные дешёвые/субсидированные даты
+    avail = {}
+
+    # Ural — через браузер (Playwright)
+    ural_routes = [rid for rid in route_ids
+                   if "ural" in ROUTE_BY_ID[rid].get("carriers", [])]
+    if ural_routes:
+        try:
+            results = await scan_routes(ural_routes)
+            for rid, m in results.items():
+                avail[(rid, "ural")] = {iso: pr for iso, pr in m.items()
+                                        if pr is not None and pr < config.SUBSIDY_PRICE_MAX}
+        except Exception as e:
+            log.warning("ural scan error: %r", e)
+
+    # S7 — через публичный API (без браузера), в отдельном потоке чтобы не блокировать loop
+    for rid in route_ids:
+        if "s7" not in ROUTE_BY_ID[rid].get("carriers", []):
+            continue
+        route = ROUTE_BY_ID[rid]
+        try:
+            prices = await asyncio.to_thread(
+                s7.check_route, route["orig"], route["dest"], config.MONTHS_AHEAD)
+            avail[(rid, "s7")] = {iso: pr for iso, pr in prices.items()
+                                  if pr is not None and pr <= config.S7_SUBSIDY_MAX}
+            log.info("s7 %s: дней ≤%d ₽: %d", rid, config.S7_SUBSIDY_MAX,
+                     len(avail[(rid, "s7")]))
+        except Exception as e:
+            log.warning("s7 scan error %s: %r", rid, e)
 
     for chat_id, u in users.items():
         for w in u["watches"]:
-            a = avail.get(w["route"], {})
-            matched = [iso for iso in a if watch_matches(w["flex"], w["value"], iso)]
-            notified = set(w.get("notified", []))
-            new = [iso for iso in matched if iso not in notified]
-            if new:
-                try:
-                    await send_alert(app.bot, int(chat_id), w,
-                                     {iso: a[iso] for iso in new})
-                    log.info("alert -> %s: %s (%d дат)", chat_id, w["route"], len(new))
-                except Exception as e:
-                    log.warning("send fail %s: %r", chat_id, e)
-            still = [iso for iso in matched]  # держим только актуальные
-            storage.set_notified(chat_id, w["id"], sorted(set(still)))
+            notified = _notified_map(w)
+            for carrier in ROUTE_BY_ID[w["route"]].get("carriers", []):
+                a = avail.get((w["route"], carrier))
+                if a is None:
+                    continue
+                matched = [iso for iso in a if watch_matches(w["flex"], w["value"], iso)]
+                already = set(notified.get(carrier, []))
+                new = [iso for iso in matched if iso not in already]
+                if new:
+                    try:
+                        await send_alert(app.bot, int(chat_id), w, carrier,
+                                         {iso: a[iso] for iso in new})
+                        log.info("alert -> %s: %s/%s (%d дат)",
+                                 chat_id, w["route"], carrier, len(new))
+                    except Exception as e:
+                        log.warning("send fail %s: %r", chat_id, e)
+                notified[carrier] = sorted(set(matched))  # только актуальные
+            storage.set_notified(chat_id, w["id"], notified)
 
 
 async def scan_loop(app):
