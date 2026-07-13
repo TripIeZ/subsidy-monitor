@@ -31,7 +31,12 @@ _MAX_DEEP = 183  # лимит окна API за один запрос, дней 
 
 
 def search_url(orig, dest, date_iso):
-    """Прямая ссылка на бронирование S7 на конкретную дату (для живого человека)."""
+    """Прямая ссылка на бронирование S7 на конкретную дату (для живого человека).
+
+    Проверено 2026-07: редиректит на прелинкованный поиск ibe.s7.ru/air на нужную
+    дату. Субсидию бот сам показать не может (капча в движке), поэтому это —
+    точка передачи человеку: он открывает поиск и выбирает свою льготную категорию.
+    """
     q = urllib.parse.urlencode({
         "searchType": "NORMAL", "journeySpan": "OW",
         "origin": orig, "destination": dest,
@@ -39,6 +44,12 @@ def search_url(orig, dest, date_iso):
         "numAdults": 1, "lang": "ru", "serviceType": "ibe", "CUR": "RUB",
     })
     return "https://www.s7.ru/external/s7-apps-redirect.dot?" + q
+
+
+# Субсидию S7 нельзя вычитать из API — диплинк это ровно обычный поиск S7,
+# внутри которого человек выбирает льготную категорию. Отдельное имя — для
+# читаемости в боте.
+subsidy_search_url = search_url
 
 
 def _fetch_calendar(client, frm, to, start, deep):

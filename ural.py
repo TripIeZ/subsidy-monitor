@@ -15,6 +15,8 @@ import json
 import re
 import urllib.parse
 
+import config
+
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
@@ -23,7 +25,9 @@ _MONTHS = {"январь": 1, "февраль": 2, "март": 3, "апрель"
            "июль": 7, "август": 8, "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12}
 _PRICE_RE = re.compile(r"(\d[\d\s ]+)\s*₽")
 
-# Подтверждённая живьём модель субсидированного поиска (subsidyType=3).
+# Базовый каркас модели booking-движка. Поля, зависящие от типа субсидии
+# (passenger.type / isAgeSubsidizedType / isFarEastSubsidizedType / subsidyType),
+# проставляются из профиля config.URAL_SUBSIDIES в _build_model().
 _BASE = {
     "departureDate": None, "returnDate": None,
     "departureLocation": "HTA", "arrivalLocation": "MOW",
@@ -41,11 +45,26 @@ _BASE = {
 }
 
 
-def subsidized_url(orig, dest, date_iso):
+def _build_model(orig, dest, date_iso, subsidy):
+    prof = config.URAL_SUBSIDIES.get(subsidy) or config.URAL_SUBSIDIES[config.DEFAULT_SUBSIDY]
     m = copy.deepcopy(_BASE)
     m["departureLocation"] = orig
     m["arrivalLocation"] = dest
     m["departureDate"] = date_iso + "T00:00:00"
+    m["subsidyType"] = prof["subsidy_type"]
+    p = m["passengers"][0]
+    p["type"] = prof["passenger_type"]
+    p["isAgeSubsidizedType"] = prof["is_age"]
+    p["isFarEastSubsidizedType"] = prof["is_fareast"]
+    return m
+
+
+def subsidized_url(orig, dest, date_iso, subsidy=config.DEFAULT_SUBSIDY):
+    """Deep-link booking-движка Ural под конкретный тип субсидии.
+
+    subsidy — ключ из config.URAL_SUBSIDIES ("age" | "dfo" | ...).
+    """
+    m = _build_model(orig, dest, date_iso, subsidy)
     js = json.dumps(m, ensure_ascii=False, separators=(",", ":"))
     return "https://book.uralairlines.ru/?model=" + urllib.parse.quote(js, safe="")
 
@@ -84,11 +103,11 @@ def parse_strip(text, anchor):
     return out
 
 
-async def _scan_anchor(context, orig, dest, anchor, sem):
+async def _scan_anchor(context, orig, dest, anchor, sem, subsidy):
     async with sem:
         page = await context.new_page()
         try:
-            await page.goto(subsidized_url(orig, dest, anchor.isoformat()),
+            await page.goto(subsidized_url(orig, dest, anchor.isoformat(), subsidy),
                             wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(6000)
             text = await page.evaluate("() => document.body.innerText")
@@ -99,11 +118,14 @@ async def _scan_anchor(context, orig, dest, anchor, sem):
             await page.close()
 
 
-async def check_route(context, route, anchors, concurrency=5):
-    """Возвращает {date_iso: price|None} по всему окну (объединение лент)."""
+async def check_route(context, route, anchors, concurrency=5, subsidy=config.DEFAULT_SUBSIDY):
+    """Возвращает {date_iso: price|None} по всему окну (объединение лент).
+
+    subsidy — тип субсидии Ural (ключ config.URAL_SUBSIDIES).
+    """
     sem = asyncio.Semaphore(concurrency)
     parts = await asyncio.gather(
-        *[_scan_anchor(context, route["orig"], route["dest"], a, sem) for a in anchors]
+        *[_scan_anchor(context, route["orig"], route["dest"], a, sem, subsidy) for a in anchors]
     )
     merged = {}
     for part in parts:

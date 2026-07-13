@@ -42,22 +42,27 @@ _SHORT = ["", "янв", "фев", "мар", "апр", "мая", "июн",
 
 WELCOME = (
     "✈️ <b>Радар субсидий</b>\n\n"
-    "Ловлю субсидированные билеты <b>Чита ↔ Москва</b> "
-    "(S7 и Уральские авиалинии) и пишу сразу, как только они появятся в продаже.\n\n"
+    "Ловлю субсидированные билеты <b>Чита ↔ Москва</b> и пишу сразу, "
+    "как только они появятся в продаже.\n\n"
     "Обычный билет ~22 972 ₽, субсидия ~6 200 ₽ — <b>экономия ~16 000 ₽</b>.\n\n"
+    "• <b>Уральские авиалинии</b> — слежу автоматически и шлю алерт.\n"
+    "• <b>S7</b> — субсидию нельзя проверить автоматически (она за капчей), "
+    "но по кнопке открою поиск S7 на нужную дату.\n\n"
     "Субсидия положена льготным категориям: пенсионеры, молодёжь до 23, "
-    "многодетные семьи, инвалиды.\n\n"
+    "жители ДФО, многодетные семьи, инвалиды.\n\n"
     "Жми «Начать слежку» — настроим за пару шагов 👇"
 )
 
 HOW = (
     "❓ <b>Как это работает</b>\n\n"
-    "1. Ты выбираешь направление и когда хочешь улететь "
+    "1. Ты выбираешь направление, тип субсидии и когда хочешь улететь "
     "(точная дата, любой день недели или месяца).\n"
-    "2. Я регулярно проверяю <b>Уральские авиалинии</b> и <b>S7</b>.\n"
-    "3. Как только под твою слежку появляется субсидированный (или аномально "
-    "дешёвый на S7) билет — мгновенно присылаю цену и ссылку на покупку.\n\n"
-    "⚡️ Субсидия разлетается за минуты — бронируй сразу, как пришёл алерт."
+    "2. Я регулярно проверяю <b>Уральские авиалинии</b> под твою слежку.\n"
+    "3. Как только появляется субсидированный билет Ural — мгновенно "
+    "присылаю цену и ссылку на покупку.\n\n"
+    "🔎 <b>S7</b> проверяется вручную: жми «Субсидии S7» в меню или кнопку "
+    "после создания слежки — открою поиск S7, там выбери свою категорию.\n\n"
+    "⚡️ Субсидия разлетается за минуты — бронируй сразу, как увидел."
 )
 
 
@@ -92,9 +97,16 @@ def describe_value(flex, value):
     return value
 
 
+def subsidy_short(w):
+    key = w.get("subsidy", config.DEFAULT_SUBSIDY)
+    prof = config.URAL_SUBSIDIES.get(key) or config.URAL_SUBSIDIES[config.DEFAULT_SUBSIDY]
+    return prof["short"]
+
+
 def watch_line(w):
     arrow = "🗓" if w["flex"] != "date" else "📅"
-    return f"{describe_route(w['route'])} · {arrow} {describe_value(w['flex'], w['value'])}"
+    return (f"{describe_route(w['route'])} · {subsidy_short(w)} · "
+            f"{arrow} {describe_value(w['flex'], w['value'])}")
 
 
 async def show(update, text, kb):
@@ -116,8 +128,46 @@ def kb_main():
     return [
         [InlineKeyboardButton("🔔 Начать слежку", callback_data="new")],
         [InlineKeyboardButton("📋 Мои слежки", callback_data="my")],
+        [InlineKeyboardButton("🔎 Субсидии S7 (проверить)", callback_data="s7menu")],
         [InlineKeyboardButton("❓ Как это работает", callback_data="how")],
     ]
+
+
+# ───────────────────────── S7: ручной поиск субсидий ─────────────────────────
+# Субсидию S7 нельзя вычитать автоматически (см. config.S7_SUBSIDY) — поэтому
+# бот отдаёт кнопку-диплинк прямо в поиск S7 на нужную дату, где человек сам
+# выбирает льготную категорию и проходит капчу.
+
+def s7_deeplink_date(flex, value):
+    """Дата (ISO) для диплинка в поиск S7 из параметров слежки."""
+    if flex == "month":
+        return value + "-01"      # "2026-09" → первое число
+    return value                  # date / week(понедельник) — уже ISO-дата
+
+
+def s7_info_text():
+    s = config.S7_SUBSIDY
+    return (
+        "🔎 <b>Субсидии S7 · Чита ↔ Москва</b>\n\n"
+        f"Единый льготный тариф ≈ <b>{s['price_hint']} ₽</b> в одну сторону "
+        "(обычный ≈ 22 000 ₽).\n\n"
+        f"🟢 <b>Онлайн</b> на сайте/в приложении S7: {s['online']}.\n"
+        f"🏢 <b>Только кассы/агентства</b>: {s['agents_only']}.\n\n"
+        f"<i>{s['note']}</i>"
+    )
+
+
+def screen_s7(date_iso=None):
+    if not date_iso:
+        date_iso = (date.today() + timedelta(days=30)).isoformat()
+    kb = [
+        [InlineKeyboardButton("🔎 Чита → Москва — открыть поиск S7",
+                              url=s7.subsidy_search_url("HTA", "MOW", date_iso))],
+        [InlineKeyboardButton("🔎 Москва → Чита — открыть поиск S7",
+                              url=s7.subsidy_search_url("MOW", "HTA", date_iso))],
+        [InlineKeyboardButton("‹ В меню", callback_data="menu")],
+    ]
+    return s7_info_text(), kb
 
 
 def screen_direction():
@@ -130,12 +180,23 @@ def screen_direction():
     return "Куда летим? Выбери направление:", kb
 
 
+def screen_subsidy():
+    kb = [[InlineKeyboardButton(f"🎫 {prof['label']}", callback_data=f"sub:{key}")]
+          for key, prof in config.URAL_SUBSIDIES.items()]
+    kb.append([InlineKeyboardButton("‹ Назад", callback_data="new")])
+    return ("Какая субсидия тебе положена?\n\n"
+            "<i>🏠 <b>Жители ДФО</b> — для прописанных на Дальнем Востоке "
+            "(Чита и всё Забайкалье подходят), без ограничений по возрасту.\n"
+            "👵 <b>Пенсионеры и молодёжь</b> — пенсионеры и пассажиры до 23 лет.</i>\n\n"
+            "Слежу отдельно за каждым типом — можно создать по слежке на оба."), kb
+
+
 def screen_flex():
     kb = [
         [InlineKeyboardButton("📅 Точная дата", callback_data="flex:date")],
         [InlineKeyboardButton("🗓 Любой день недели", callback_data="flex:week")],
         [InlineKeyboardButton("📆 Любой день месяца", callback_data="flex:month")],
-        [InlineKeyboardButton("‹ Назад", callback_data="new")],
+        [InlineKeyboardButton("‹ Назад", callback_data="back_subsidy")],
     ]
     return ("Когда хочешь улететь?\n\n"
             "<i>Чем гибче даты — тем выше шанс поймать субсидию.</i>"), kb
@@ -220,6 +281,11 @@ async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await render_my(update, update.effective_chat.id)
 
 
+async def cmd_s7(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text, kb = screen_s7()
+    await show(update, text, kb)
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data or ""
@@ -234,6 +300,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton("‹ В меню", callback_data="menu")]]
         await show(update, HOW, kb)
         return
+    if data == "s7menu":
+        text, kb = screen_s7()
+        await show(update, text, kb)
+        return
     if data == "new":
         context.user_data["draft"] = {}
         text, kb = screen_direction()
@@ -247,7 +317,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         choice = data.split(":", 1)[1]
         routes = ["hta_mow", "mow_hta"] if choice == "round" else [choice]
         context.user_data.setdefault("draft", {})["routes"] = routes
+        text, kb = screen_subsidy()
+        await show(update, text, kb)
+        return
+
+    if data.startswith("sub:"):
+        subsidy = data.split(":", 1)[1]
+        if subsidy not in config.URAL_SUBSIDIES:
+            subsidy = config.DEFAULT_SUBSIDY
+        context.user_data.setdefault("draft", {})["subsidy"] = subsidy
         text, kb = screen_flex()
+        await show(update, text, kb)
+        return
+
+    if data == "back_subsidy":
+        text, kb = screen_subsidy()
         await show(update, text, kb)
         return
 
@@ -299,11 +383,12 @@ async def save_watch(update, context, flex, value):
         text, kb = screen_direction()
         await show(update, text, kb)
         return
+    subsidy = draft.get("subsidy", config.DEFAULT_SUBSIDY)
 
     chat_id = update.effective_chat.id
     for rid in routes:
         storage.add_watch(chat_id, {
-            "id": uuid4().hex[:8], "route": rid,
+            "id": uuid4().hex[:8], "route": rid, "subsidy": subsidy,
             "flex": flex, "value": value, "notified": {},
         })
 
@@ -313,16 +398,23 @@ async def save_watch(update, context, flex, value):
         route_txt = describe_route(routes[0])
     when = describe_value(flex, value)
     text = (
-        "✅ <b>Слежу за билетами!</b>\n\n"
+        "✅ <b>Слежу за билетами Ural!</b>\n\n"
         f"✈️ {route_txt}\n"
+        f"🎫 {config.URAL_SUBSIDIES[subsidy]['label']}\n"
         f"🗓 {when}\n\n"
-        "Как только появится субсидия — сразу напишу.\n"
-        "Можешь добавить ещё слежку или посмотреть текущие."
+        "Как только появится субсидия Ural — сразу напишу.\n\n"
+        "🔎 <b>S7</b> автоматически проверить нельзя (субсидия за капчей), "
+        "но можно глянуть вручную — кнопка ниже откроет поиск S7 на эти даты."
     )
-    kb = [
-        [InlineKeyboardButton("➕ Ещё слежка", callback_data="new")],
-        [InlineKeyboardButton("📋 Мои слежки", callback_data="my")],
-    ]
+    dl_date = s7_deeplink_date(flex, value)
+    kb = []
+    for rid in routes:
+        r = ROUTE_BY_ID[rid]
+        kb.append([InlineKeyboardButton(
+            f"🔎 Проверить S7: {r['label']}",
+            url=s7.subsidy_search_url(r["orig"], r["dest"], dl_date))])
+    kb.append([InlineKeyboardButton("➕ Ещё слежка", callback_data="new")])
+    kb.append([InlineKeyboardButton("📋 Мои слежки", callback_data="my")])
     context.user_data["draft"] = {}
     await show(update, text, kb)
 
@@ -358,17 +450,23 @@ def watch_matches(flex, value, iso):
     return False
 
 
-async def scan_routes(route_ids):
+async def scan_routes(pairs):
+    """pairs — набор (route_id, subsidy). Возвращает {(route_id, subsidy): {iso: price}}.
+
+    Каждый тип субсидии — отдельная модель booking-движка, поэтому сканим
+    каждую пару (маршрут × тип) своим проходом.
+    """
     start = date.today() + timedelta(days=1)
     results = {}
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=config.HEADLESS)
         ctx = await browser.new_context(locale="ru-RU", user_agent=ural.UA,
                                         viewport={"width": 1400, "height": 950})
-        for rid in route_ids:
+        for rid, subsidy in pairs:
             route = ROUTE_BY_ID[rid]
             anchors = ural.anchors_for(start, config.MONTHS_AHEAD)
-            results[rid] = await ural.check_route(ctx, route, anchors, concurrency=5)
+            results[(rid, subsidy)] = await ural.check_route(
+                ctx, route, anchors, concurrency=5, subsidy=subsidy)
         await browser.close()
     return results
 
@@ -386,16 +484,19 @@ def _notified_map(w):
     return {}
 
 
-async def send_alert(bot, chat_id, w, carrier, dates):
+async def send_alert(bot, chat_id, w, carrier, dates, subsidy):
     route = ROUTE_BY_ID[w["route"]]
     ds = sorted(dates)
     if carrier == "s7":
-        head = "🟢 <b>Дешёвый/субсидированный билет S7!</b>"
+        head = "🟢 <b>Низкая цена S7</b> (обычный тариф, <u>не субсидия</u>)"
         url = s7.search_url(route["orig"], route["dest"], ds[0])
+        sub_line = f"✈️ {route['label']} · S7"
     else:
-        head = "🎉 <b>Субсидия найдена!</b>"
-        url = ural.subsidized_url(route["orig"], route["dest"], ds[0])
-    lines = [head, f"✈️ {route['label']} · {_CARRIER_LABEL.get(carrier, carrier)}", ""]
+        prof = config.URAL_SUBSIDIES.get(subsidy) or config.URAL_SUBSIDIES[config.DEFAULT_SUBSIDY]
+        head = f"🎉 <b>Субсидия найдена!</b> · {prof['label']}"
+        url = ural.subsidized_url(route["orig"], route["dest"], ds[0], subsidy)
+        sub_line = f"✈️ {route['label']} · Ural · {prof['short']}"
+    lines = [head, sub_line, ""]
     for iso in ds[:8]:
         lines.append(f"• {fmt_full(iso)} — <b>{dates[iso]} ₽</b>")
     if len(ds) > 8:
@@ -411,46 +512,55 @@ async def send_alert(bot, chat_id, w, carrier, dates):
 
 async def scan_and_notify(app):
     users = storage.all_users()
-    route_ids = {w["route"] for u in users.values() for w in u["watches"]}
-    if not route_ids:
+    watches = [(cid, w) for cid, u in users.items() for w in u["watches"]]
+    if not watches:
         return
-    log.info("scan: маршрутов в работе %d", len(route_ids))
 
-    # avail[(route_id, carrier)] = {iso: price} — доступные дешёвые/субсидированные даты
+    # avail: Ural → (route, "ural", subsidy); S7 → (route, "s7"). Значение — {iso: price}.
     avail = {}
 
-    # Ural — через браузер (Playwright)
-    ural_routes = [rid for rid in route_ids
-                   if "ural" in ROUTE_BY_ID[rid].get("carriers", [])]
-    if ural_routes:
+    # Ural — свой проход браузером на каждую пару (маршрут × тип субсидии)
+    ural_pairs = {(w["route"], w.get("subsidy", config.DEFAULT_SUBSIDY))
+                  for _, w in watches
+                  if "ural" in ROUTE_BY_ID[w["route"]].get("carriers", [])}
+    if ural_pairs:
+        log.info("scan ural: пар (маршрут×субсидия) %d", len(ural_pairs))
         try:
-            results = await scan_routes(ural_routes)
-            for rid, m in results.items():
-                avail[(rid, "ural")] = {iso: pr for iso, pr in m.items()
-                                        if pr is not None and pr < config.SUBSIDY_PRICE_MAX}
+            results = await scan_routes(ural_pairs)
+            for (rid, subsidy), m in results.items():
+                avail[(rid, "ural", subsidy)] = {
+                    iso: pr for iso, pr in m.items()
+                    if pr is not None and pr < config.SUBSIDY_PRICE_MAX}
         except Exception as e:
             log.warning("ural scan error: %r", e)
 
-    # S7 — через публичный API (без браузера), в отдельном потоке чтобы не блокировать loop
-    for rid in route_ids:
-        if "s7" not in ROUTE_BY_ID[rid].get("carriers", []):
-            continue
-        route = ROUTE_BY_ID[rid]
-        try:
-            prices = await asyncio.to_thread(
-                s7.check_route, route["orig"], route["dest"], config.MONTHS_AHEAD)
-            avail[(rid, "s7")] = {iso: pr for iso, pr in prices.items()
-                                  if pr is not None and pr <= config.S7_SUBSIDY_MAX}
-            log.info("s7 %s: дней ≤%d ₽: %d", rid, config.S7_SUBSIDY_MAX,
-                     len(avail[(rid, "s7")]))
-        except Exception as e:
-            log.warning("s7 scan error %s: %r", rid, e)
+    # S7 — публичный API отдаёт только ОБЫЧНЫЙ минимум (субсидия за капчей,
+    # авто-мониторить нельзя). По умолчанию S7-скан выключен (config.S7_COMMERCIAL_SCAN),
+    # чтобы не слать вводящие в заблуждение «субсидии». Субсидия S7 — через кнопку-диплинк.
+    if config.S7_COMMERCIAL_SCAN:
+        s7_routes = {w["route"] for _, w in watches
+                     if "s7" in ROUTE_BY_ID[w["route"]].get("carriers", [])}
+        for rid in s7_routes:
+            route = ROUTE_BY_ID[rid]
+            try:
+                prices = await asyncio.to_thread(
+                    s7.check_route, route["orig"], route["dest"], config.MONTHS_AHEAD)
+                avail[(rid, "s7")] = {iso: pr for iso, pr in prices.items()
+                                      if pr is not None and pr <= config.S7_SUBSIDY_MAX}
+                log.info("s7 %s: дней ≤%d ₽: %d", rid, config.S7_SUBSIDY_MAX,
+                         len(avail[(rid, "s7")]))
+            except Exception as e:
+                log.warning("s7 scan error %s: %r", rid, e)
 
     for chat_id, u in users.items():
         for w in u["watches"]:
+            subsidy = w.get("subsidy", config.DEFAULT_SUBSIDY)
             notified = _notified_map(w)
             for carrier in ROUTE_BY_ID[w["route"]].get("carriers", []):
-                a = avail.get((w["route"], carrier))
+                if carrier == "ural":
+                    a = avail.get((w["route"], "ural", subsidy))
+                else:
+                    a = avail.get((w["route"], carrier))
                 if a is None:
                     continue
                 matched = [iso for iso in a if watch_matches(w["flex"], w["value"], iso)]
@@ -459,9 +569,9 @@ async def scan_and_notify(app):
                 if new:
                     try:
                         await send_alert(app.bot, int(chat_id), w, carrier,
-                                         {iso: a[iso] for iso in new})
-                        log.info("alert -> %s: %s/%s (%d дат)",
-                                 chat_id, w["route"], carrier, len(new))
+                                         {iso: a[iso] for iso in new}, subsidy)
+                        log.info("alert -> %s: %s/%s/%s (%d дат)",
+                                 chat_id, w["route"], carrier, subsidy, len(new))
                     except Exception as e:
                         log.warning("send fail %s: %r", chat_id, e)
                 notified[carrier] = sorted(set(matched))  # только актуальные
@@ -483,6 +593,7 @@ async def on_startup(app):
         BotCommand("start", "Меню"),
         BotCommand("new", "Новая слежка"),
         BotCommand("my", "Мои слежки"),
+        BotCommand("s7", "Субсидии S7 (проверить)"),
         BotCommand("help", "Как это работает"),
     ])
     app.create_task(scan_loop(app))
@@ -501,6 +612,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("new", cmd_new))
     app.add_handler(CommandHandler("my", cmd_my))
+    app.add_handler(CommandHandler("s7", cmd_s7))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
